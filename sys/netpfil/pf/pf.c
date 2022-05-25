@@ -5877,6 +5877,8 @@ pf_routable(struct pf_addr *addr, sa_family_t af, struct pfi_kkif *kif,
 	return (0);
 }
 
+#define PF_ROUTE_ERROR_MAX	100
+
 #ifdef INET
 static void
 pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
@@ -5890,6 +5892,7 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 	struct pf_ksrc_node	*sn = NULL;
 	int			 error = 0;
 	uint16_t		 ip_len, ip_off;
+	static int counter	 = 0;
 
 	KASSERT(m && *m && r && oifp, ("%s: invalid parameters", __func__));
 	KASSERT(dir == PF_IN || dir == PF_OUT, ("%s: invalid direction",
@@ -6013,12 +6016,20 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 		}
 		m_clrprotoflags(m0);	/* Avoid confusing lower layers. */
 		error = (*ifp->if_output)(ifp, m0, sintosa(&dst), NULL);
+		if (error && counter < PF_ROUTE_ERROR_MAX) {
+			printf("pf: if_output/full returned %d\n", error);
+			counter++;
+		}
 		goto done;
 	}
 
 	/* Balk when DF bit is set or the interface didn't support TSO. */
 	if ((ip_off & IP_DF) || (m0->m_pkthdr.csum_flags & CSUM_TSO)) {
 		error = EMSGSIZE;
+		if (error && counter < PF_ROUTE_ERROR_MAX) {
+			printf("pf: DF/no-TSO returned %d\n", error);
+			counter++;
+		}
 		KMOD_IPSTAT_INC(ips_cantfrag);
 		if (r->rt != PF_DUPTO) {
 			if (s && pd->nat_rule != NULL)
@@ -6034,6 +6045,10 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 	}
 
 	error = ip_fragment(ip, &m0, ifp->if_mtu, ifp->if_hwassist);
+	if (error && counter < PF_ROUTE_ERROR_MAX) {
+		printf("pf: ip_fragment returned %d\n", error);
+		counter++;
+	}
 	if (error)
 		goto bad;
 
@@ -6043,6 +6058,10 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 		if (error == 0) {
 			m_clrprotoflags(m0);
 			error = (*ifp->if_output)(ifp, m0, sintosa(&dst), NULL);
+			if (error && counter < PF_ROUTE_ERROR_MAX) {
+				printf("pf: if_output/fragment returned %d\n", error);
+				counter++;
+			}
 		} else
 			m_freem(m0);
 	}
